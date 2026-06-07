@@ -11,6 +11,7 @@
 #include <imgui-master/backends/imgui_impl_opengl3.h>
 
 #include <shader.h>
+#include <objects.h>
 
 #include <iostream>
 
@@ -19,6 +20,8 @@ void processInput(GLFWwindow *window);
 void updateWindowSize(GLFWwindow* window, Shader& shader);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 void gui1();
+
+
 
 // настройки
 unsigned int SCR_WIDTH = 800;
@@ -42,6 +45,9 @@ float lastFrame = 0.0f; // время предыдущего кадра
 
 float my_color[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 bool my_tool_active = true; 
+
+std::vector<Object> cubes; // вектор обьектов
+
 
 int main()
 {
@@ -237,6 +243,16 @@ stbi_image_free(data);
     ourShader.setInt("texture2", 1);
 
 
+    
+    for (int i = 0; i < 10; ++i) {
+        cubes.emplace_back(
+            std::vector<float>(vertices, vertices + sizeof(vertices) / sizeof(float)),
+            (i % 2 == 0) ? texture1 : texture2,
+            cubePositions[i],
+            glm::vec3(0.0f),
+            glm::vec3(1.0f)
+        );
+    }
 
     // render loop
     // -----------
@@ -287,15 +303,10 @@ stbi_image_free(data);
 
         // render boxes
         glBindVertexArray(VAO);
-        for (unsigned int i = 0; i < 10; i++)
+        for (const auto& cube : cubes)
         {
-            // calculate the model matrix for each object and pass it to shader before drawing
-            glm::mat4 model = glm::mat4(1.0f);
-            model = glm::translate(model, cubePositions[i]);
-            float angle = 20.0f * i;
-            model = glm::rotate(model, glm::radians(angle), glm::vec3(1.0f, 0.3f, 0.5f));
-            ourShader.setMat4("model", model);
-
+            glBindTexture(GL_TEXTURE_2D, cube.textureID);
+            ourShader.setMat4("model", cube.getModelMatrix());
             glDrawArrays(GL_TRIANGLES, 0, 36);
         }
         //std::cout << "костыль 2" << std::endl;
@@ -419,37 +430,92 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height)
 
 void gui1(){
     ImGui::NewFrame();
-        
-        //std::cout << "костыль 4" << std::endl;
-        //ImGui::ShowDemoWindow(); // Show demo window! :)
-        ImGui::Begin("Tool", &my_tool_active, ImGuiWindowFlags_MenuBar);
-        if (ImGui::BeginMenuBar())
+
+    ImGui::Begin("Tool", &my_tool_active, ImGuiWindowFlags_MenuBar);
+    if (ImGui::BeginMenuBar())
+    {
+        if (ImGui::BeginMenu("File"))
         {
-            if (ImGui::BeginMenu("File"))
-            {
-                if (ImGui::MenuItem("Open..", "Ctrl+O")) { /* Do stuff */ }
-                if (ImGui::MenuItem("Save", "Ctrl+S"))   { /* Do stuff */ }
-                if (ImGui::MenuItem("Close", "Ctrl+W"))  { my_tool_active = false; }
-                ImGui::EndMenu();
-            }
-            ImGui::EndMenuBar();
+            ImGui::EndMenu();
         }
+        ImGui::EndMenuBar();
+    }
 
-// Edit a color stored as 4 floats
-        ImGui::Text("Color:");
-        ImGui::ColorEdit4("", my_color);
+    ImGui::Text("Color:");
+    ImGui::ColorEdit4("", my_color);
 
-// Generate samples and plot them
-        // float samples[100];
-        // for (int n = 0; n < 100; n++)
-        //     samples[n] = sinf(n * 0.2f + ImGui::GetTime() * 1.5f);
-        // ImGui::PlotLines("Samples", samples, 100);
 
-// Display contents in a scrolling region
-        ImGui::TextColored(ImVec4(1,1,0,1), "Important Stuff");
-        ImGui::BeginChild("Scrolling");
-        for (int n = 0; n < 50; n++)
-            ImGui::Text("%04d: Some text", n);
-        ImGui::EndChild();
-        ImGui::End();
+    // --- Папка с объектами ---
+    if (ImGui::CollapsingHeader("Objects", ImGuiTreeNodeFlags_DefaultOpen)) {
+        for (size_t i = 0; i < cubes.size(); ++i) {
+            std::string label = "Object " + std::to_string(i);
+            if (ImGui::TreeNode(label.c_str())) {
+                Object& obj = cubes[i];
+                ImGui::Text("ID: %zu", i);
+
+                // Position
+                ImGui::Text("Position");
+                ImGui::SameLine();
+                for (int j = 0; j < 3; ++j) {
+                    ImGui::PushID(j);
+                    ImGui::SetNextItemWidth(60);
+                    // Показываем только значение, редактируем колесиком мыши
+                    ImGui::InputFloat("", &obj.position[j], 0.0f, 0.0f, "%.2f");
+                    if (ImGui::IsItemHovered() && !ImGui::IsItemActive()) {
+                        float wheel = ImGui::GetIO().MouseWheel;
+                        if (wheel != 0.0f) {
+                            obj.position[j] += 0.05f * wheel /1.5f;
+                        }
+                    }
+                    ImGui::SameLine();
+                    ImGui::PopID();
+                }
+                ImGui::NewLine();
+
+                // Rotation
+                ImGui::Text("Rotation");
+                ImGui::SameLine();
+                for (int j = 0; j < 3; ++j) {
+                    ImGui::PushID(100 + j);
+                    ImGui::SetNextItemWidth(60);
+                    ImGui::InputFloat("", &obj.rotation[j], 0.0f, 0.0f, "%.2f");
+                    if (ImGui::IsItemHovered() && !ImGui::IsItemActive()) {
+                        float wheel = ImGui::GetIO().MouseWheel;
+                        if (wheel != 0.0f) {
+                            obj.rotation[j] += 1.0f * wheel / 1.5f;
+                        }
+                    }
+                    ImGui::SameLine();
+                    ImGui::PopID();
+                }
+                ImGui::NewLine();
+
+                // Scale
+                ImGui::Text("Scale");
+                ImGui::SameLine();
+                for (int j = 0; j < 3; ++j) {
+                    ImGui::PushID(200 + j);
+                    ImGui::SetNextItemWidth(60);
+                    ImGui::InputFloat("", &obj.scale[j], 0.0f, 0.0f, "%.2f");
+                    if (ImGui::IsItemHovered() && !ImGui::IsItemActive()) {
+                        float wheel = ImGui::GetIO().MouseWheel;
+                        if (wheel != 0.0f) {
+                            obj.scale[j] += 0.05f * wheel /1.5f;
+                        }
+                    }
+                    ImGui::SameLine();
+                    ImGui::PopID();
+                }
+                ImGui::NewLine();
+
+                ImGui::Text("Texture ID: %u", obj.textureID);
+                ImGui::TreePop();
+            }
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(1,1,0,1), "Important Stuff");
+
+    ImGui::End();
 }
