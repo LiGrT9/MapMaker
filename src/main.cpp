@@ -13,13 +13,20 @@
 #include <shader.h>
 #include <objects.h>
 
+#include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
+#include <unordered_map>
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void processInput(GLFWwindow *window);
-void updateWindowSize(GLFWwindow* window, Shader& shader);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
+void updateOrbitCamera();
 void gui1();
+
+unsigned int loadTexture(const std::string& path);
 
 
 
@@ -39,6 +46,9 @@ float lastY = 300.0f; // половина высоты окна
 bool firstMouse = true;
 bool movement1 = false;
 bool movement2 = false;
+glm::vec3 cameraCenter = glm::vec3(0.0f);
+float orbitDistance = 3.0f;
+bool movement2KeyPressedLastFrame = false;
 
 float deltaTime = 0.0f; // время между текущим и предыдущим кадром
 float lastFrame = 0.0f; // время предыдущего кадра
@@ -47,6 +57,142 @@ float my_color[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 bool my_tool_active = true; 
 
 std::vector<Object> cubes; // вектор обьектов
+std::unordered_map<std::string, unsigned int> textureCache;
+
+unsigned int loadTexture(const std::string& path)
+{
+    const auto cachedTexture = textureCache.find(path);
+    if (cachedTexture != textureCache.end())
+        return cachedTexture->second;
+
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    unsigned char* data = stbi_load(path.c_str(), &width, &height, &channels, 0);
+    if (!data) {
+        std::cout << "Failed to load texture: " << path << std::endl;
+        return 0;
+    }
+
+    GLenum format = channels == 4 ? GL_RGBA : channels == 3 ? GL_RGB : GL_RED;
+    unsigned int texture = 0;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    stbi_image_free(data);
+
+    textureCache.emplace(path, texture);
+    return texture;
+}
+
+bool saveSceneConfig(const std::string& path)
+{
+    for (const Object& object : cubes) {
+        if (object.meshPath.empty()) {
+            std::cout << "Cannot save scene: object '" << object.name
+                      << "' has no OBJ path." << std::endl;
+            return false;
+        }
+    }
+
+    std::ofstream file(path);
+    if (!file) {
+        std::cout << "Cannot write scene config: " << path << std::endl;
+        return false;
+    }
+
+        file << "# object <name> <x> <y> <z> <obj_path> "
+            "<rotation_x> <rotation_y> <rotation_z> "
+            "<scale_x> <scale_y> <scale_z> <texture_path>\n";
+
+    file << std::fixed << std::setprecision(6);
+    for (const Object& object : cubes) {
+        file << "object " << (object.name.empty() ? "unnamed" : object.name) << ' '
+             << object.position.x << ' ' << object.position.y << ' ' << object.position.z << ' '
+             << object.meshPath << ' '
+             << object.rotation.x << ' ' << object.rotation.y << ' ' << object.rotation.z << ' '
+             << object.scale.x << ' ' << object.scale.y << ' ' << object.scale.z << ' '
+             << object.texturePath << '\n';
+    }
+
+    std::cout << "Scene saved to " << path << std::endl;
+    return true;
+}
+
+bool loadSceneConfig(const std::string& path)
+{
+    cubes.clear();
+    std::ifstream file(path);
+    if (!file) {
+        std::cout << "Scene config not found: " << path << std::endl;
+        return false;
+    }
+
+    std::string line;
+    int lineNumber = 0;
+    while (std::getline(file, line)) {
+        ++lineNumber;
+        std::istringstream stream(line);
+        std::string type;
+        stream >> type;
+
+        if (type.empty() || type[0] == '#')
+            continue;
+        if (type != "object") {
+            std::cout << "Unknown scene command at line " << lineNumber << ": " << type << std::endl;
+            continue;
+        }
+
+        std::string name;
+        std::string meshPath;
+        glm::vec3 position;
+        glm::vec3 rotation(0.0f);
+        glm::vec3 scale(1.0f);
+        std::string texturePath = "include/resources/container.jpg";
+
+        if (!(stream >> name >> position.x >> position.y >> position.z >> meshPath)) {
+            std::cout << "Invalid object at scene line " << lineNumber << std::endl;
+            return false;
+        }
+
+        if (!(stream >> rotation.x >> rotation.y >> rotation.z)) {
+            stream.clear();
+        }
+        if (!(stream >> scale.x >> scale.y >> scale.z)) {
+            stream.clear();
+        }
+        if (stream >> texturePath) {
+            if (texturePath == "1")
+                texturePath = "include/resources/awesomeface.png";
+            else if (texturePath == "0")
+                texturePath = "include/resources/container.jpg";
+        }
+
+        std::vector<float> vertices;
+        std::string error;
+        if (!loadObjMesh(meshPath, vertices, error)) {
+            std::cout << "Failed to load object '" << name << "': " << error << std::endl;
+            cubes.clear();
+            return false;
+        }
+
+        unsigned int texture = loadTexture(texturePath);
+        if (texture == 0) {
+            cubes.clear();
+            return false;
+        }
+
+        cubes.emplace_back(vertices, texture, position, rotation, scale,
+                           name, meshPath, texturePath);
+    }
+
+    return !cubes.empty();
+}
 
 
 int main()
@@ -76,6 +222,7 @@ int main()
 
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL); // изначально мышь не захвачена
     glfwSetCursorPosCallback(window, mouse_callback);
+    glfwSetScrollCallback(window, scroll_callback);
 
 
     // glad: load all OpenGL function pointers
@@ -186,56 +333,15 @@ int main()
     glEnableVertexAttribArray(1);
 
 
-    std::cout << "2.1" << std::endl;
 
-    // load and create a texture 
-    // -------------------------
-    unsigned int texture1, texture2;
-    // texture 1
-    // ---------
-    glGenTextures(1, &texture1);
-glBindTexture(GL_TEXTURE_2D, texture1);
-// set the texture wrapping parameters
-glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-// set texture filtering parameters
-glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-// load image, create texture and generate mipmaps
-int width, height, nrChannels;
-stbi_set_flip_vertically_on_load(true);
-unsigned char *data = stbi_load("include/resources/container.jpg", &width, &height, &nrChannels, 0);
-if (data)
-{
-    GLenum format = (nrChannels == 4) ? GL_RGBA : GL_RGB;
-    glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
-    glGenerateMipmap(GL_TEXTURE_2D);
-}
-else
-{
-    std::cout << "Failed to load texture: container.jpg" << std::endl;
-}
-stbi_image_free(data);
-
-// texture 2
-glGenTextures(1, &texture2);
-glBindTexture(GL_TEXTURE_2D, texture2);
-glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-data = stbi_load("include/resources/awesomeface.png", &width, &height, &nrChannels, 0);
-if (data)
-{
-    GLenum format = (nrChannels == 4) ? GL_RGBA : GL_RGB;
-    glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
-    glGenerateMipmap(GL_TEXTURE_2D);
-}
-else
-{
-    std::cout << "Failed to load texture: awesomeface.png" << std::endl;
-}
-stbi_image_free(data);
+    // Load default textures used by the shader's second sampler and fallback scene.
+    stbi_set_flip_vertically_on_load(true);
+    unsigned int texture1 = loadTexture("include/resources/container.jpg");
+    unsigned int texture2 = loadTexture("include/resources/awesomeface.png");
+    if (texture1 == 0 || texture2 == 0) {
+        glfwTerminate();
+        return -1;
+    }
     // tell opengl for each sampler to which texture unit it belongs to (only has to be done once)
     // -------------------------------------------------------------------------------------------
     ourShader.use();
@@ -244,14 +350,20 @@ stbi_image_free(data);
 
 
     
-    for (int i = 0; i < 10; ++i) {
-        cubes.emplace_back(
-            std::vector<float>(vertices, vertices + sizeof(vertices) / sizeof(float)),
-            (i % 2 == 0) ? texture1 : texture2,
-            cubePositions[i],
-            glm::vec3(0.0f),
-            glm::vec3(1.0f)
-        );
+    if (!loadSceneConfig("scene.cfg")) {
+        std::cout << "Using built-in cube scene." << std::endl;
+        for (int i = 0; i < 10; ++i) {
+            cubes.emplace_back(
+                std::vector<float>(vertices, vertices + sizeof(vertices) / sizeof(float)),
+                (i % 2 == 0) ? texture1 : texture2,
+                cubePositions[i],
+                glm::vec3(0.0f),
+                glm::vec3(1.0f),
+                "Cube" + std::to_string(i),
+                "",
+                "include/resources/container.jpg"
+            );
+        }
     }
 
     // render loop
@@ -305,9 +417,10 @@ stbi_image_free(data);
         glBindVertexArray(VAO);
         for (const auto& cube : cubes)
         {
+            glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, cube.textureID);
             ourShader.setMat4("model", cube.getModelMatrix());
-            glDrawArrays(GL_TRIANGLES, 0, 36);
+            glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(cube.vertices.size() / 5));
         }
         //std::cout << "костыль 2" << std::endl;
         ImGui::Render();
@@ -319,7 +432,6 @@ stbi_image_free(data);
         glfwPollEvents();
     }
 
-    // optional: de-allocate all resources once they've outlived their purpose:
     // ------------------------------------------------------------------------
     glDeleteVertexArrays(1, &VAO);
     glDeleteBuffers(1, &VBO);
@@ -337,6 +449,15 @@ stbi_image_free(data);
 void processInput(GLFWwindow *window)
 {
     static bool altPressedLastFrame = false;
+    bool movement2KeyPressed = glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS;
+
+    if (movement2KeyPressed && !movement2KeyPressedLastFrame) {
+        movement2 = !movement2;
+        movement1 = false;
+        firstMouse = true;
+        updateOrbitCamera();
+    }
+    movement2KeyPressedLastFrame = movement2KeyPressed;
 
     // Переключение захвата мыши по Alt (левый Alt)
     bool altPressed = glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS;
@@ -374,52 +495,109 @@ void processInput(GLFWwindow *window)
             cameraPos += cameraUp * cameraSpeed;
         if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS)
             cameraPos -= cameraUp * cameraSpeed;
-    } else if (movement2) {
-        return;
+        
     }
+    static bool saveKeyWasPressed = false;
+    bool saveKeyPressed = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS
+                       && glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS;
+    if (saveKeyPressed && !saveKeyWasPressed)
+        saveSceneConfig("scene.cfg");
+    saveKeyWasPressed = saveKeyPressed;
 
 }
 
 void mouse_callback(GLFWwindow* window, double xpos, double ypos)
 {
-    if (!movement1)
-        return;
+    if (!movement1) {
+        bool leftMousePressed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        bool rightMousePressed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
 
-    static float sensitivity = 0.1f;
-    if (firstMouse)
-    {
+        if (!leftMousePressed && !rightMousePressed) {
+            firstMouse = true;
+            return;
+        }
+
+        if (firstMouse)
+        {
+            lastX = xpos;
+            lastY = ypos;
+            firstMouse = false;
+            return;
+        }
+
+        float xoffset = xpos - lastX;
+        float yoffset = lastY - ypos; // перевернуто, потому что y-координаты идут сверху вниз
         lastX = xpos;
         lastY = ypos;
-        firstMouse = false;
+
+        if (leftMousePressed) {
+            yaw += xoffset * 0.1f;
+            pitch += yoffset * 0.1f;
+            pitch = glm::clamp(pitch, -89.0f, 89.0f);
+            updateOrbitCamera();
+        } else if (rightMousePressed) {
+            glm::vec3 right = glm::normalize(glm::cross(cameraFront, cameraUp));
+            glm::vec3 up = glm::normalize(glm::cross(right, cameraFront));
+            float panSpeed = orbitDistance * 0.0025f;
+            glm::vec3 panOffset = (-right * xoffset - up * yoffset) * panSpeed;
+            cameraCenter += panOffset;
+            cameraPos += panOffset;
+            cameraFront = glm::normalize(cameraCenter - cameraPos);
+        }
+    } else if (movement1) {
+        static float sensitivity = 0.1f;
+        if (firstMouse)
+        {
+            lastX = xpos;
+            lastY = ypos;
+            firstMouse = false;
+        }
+
+        float xoffset = xpos - lastX;
+        float yoffset = lastY - ypos;
+        lastX = xpos;
+        lastY = ypos;
+
+        xoffset *= sensitivity;
+        yoffset *= sensitivity;
+
+        yaw   += xoffset;
+        pitch += yoffset;
+
+        if (pitch > 89.0f)
+            pitch = 89.0f;
+        if (pitch < -89.0f)
+            pitch = -89.0f;
+
+        glm::vec3 front;
+        front.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
+        front.y = sin(glm::radians(pitch));
+        front.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
+        cameraFront = glm::normalize(front);
     }
+}
 
-    float xoffset = xpos - lastX;
-    float yoffset = lastY - ypos; // перевернуто, потому что y-координаты идут сверху вниз
-    lastX = xpos;
-    lastY = ypos;
+void scroll_callback(GLFWwindow*, double, double yoffset)
+{
+    if (!movement1 && !ImGui::GetIO().WantCaptureMouse) {
+        orbitDistance = glm::clamp(orbitDistance - static_cast<float>(yoffset) * 0.5f, 0.5f, 100.0f);
+        updateOrbitCamera();
+    }
+}
 
-    xoffset *= sensitivity;
-    yoffset *= sensitivity;
-
-    yaw   += xoffset;
-    pitch += yoffset;
-
-    // Ограничим pitch, чтобы камера не перевернулась
-    if (pitch > 89.0f)
-        pitch = 89.0f;
-    if (pitch < -89.0f)
-        pitch = -89.0f;
-
-    glm::vec3 front;
-    front.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
-    front.y = sin(glm::radians(pitch));
-    front.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
-    cameraFront = glm::normalize(front);
+void updateOrbitCamera()
+{
+    glm::vec3 offset;
+    offset.x = orbitDistance * cos(glm::radians(yaw)) * cos(glm::radians(pitch));
+    offset.y = orbitDistance * sin(glm::radians(pitch));
+    offset.z = orbitDistance * sin(glm::radians(yaw)) * cos(glm::radians(pitch));
+    cameraPos = cameraCenter + offset;
+    cameraFront = glm::normalize(cameraCenter - cameraPos);
 }
 
 // glfw: whenever the window size changed (by OS or user resize) this callback function executes
 // ---------------------------------------------------------------------------------------------
-void framebuffer_size_callback(GLFWwindow* window, int width, int height)
+void framebuffer_size_callback(GLFWwindow*, int width, int height)
 {
     // make sure the viewport matches the new window dimensions; note that width and 
     // height will be significantly larger than specified on retina displays.
@@ -452,6 +630,10 @@ void gui1(){
             if (ImGui::TreeNode(label.c_str())) {
                 Object& obj = cubes[i];
                 ImGui::Text("ID: %zu", i);
+                ImGui::Text("Name: %s", obj.name.c_str());
+                if (!obj.meshPath.empty())
+                    ImGui::Text("Mesh: %s", obj.meshPath.c_str());
+                ImGui::Text("Texture: %s", obj.texturePath.c_str());
 
                 // Position
                 ImGui::Text("Position");
