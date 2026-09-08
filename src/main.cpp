@@ -28,7 +28,7 @@ void gui1();
 
 unsigned int loadTexture(const std::string& path);
 
-
+// for github alow commit
 
 // настройки
 unsigned int SCR_WIDTH = 800;
