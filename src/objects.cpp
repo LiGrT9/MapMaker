@@ -124,9 +124,12 @@ Object::Object(const std::vector<float>& verts, unsigned int texID,
            const glm::vec3& scl,
            const std::string& objectName,
                      const std::string& sourcePath,
-                     const std::string& sourceTexturePath)
+               const std::string& sourceTexturePath,
+               const std::vector<std::string>& sourceTexturePaths,
+               const std::vector<unsigned int>& sourceTextureIDs)
         : name(objectName), meshPath(sourcePath), texturePath(sourceTexturePath),
-            vertices(verts), textureID(texID),
+    texturePaths(sourceTexturePaths), vertices(verts), textureID(texID),
+    textureIDs(sourceTextureIDs),
       position(pos), rotation(rot), scale(scl) {}
 
 void Object::setPosition(const glm::vec3& pos) {

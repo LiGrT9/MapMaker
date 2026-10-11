@@ -10,8 +10,10 @@ public:
     std::string name;
     std::string meshPath;
     std::string texturePath;
+    std::vector<std::string> texturePaths;
     std::vector<float> vertices;
     unsigned int textureID;
+    std::vector<unsigned int> textureIDs;
     glm::vec3 position;
     glm::vec3 rotation;
     glm::vec3 scale;
@@ -22,7 +24,9 @@ public:
             const glm::vec3& scl = glm::vec3(1.0f),
             const std::string& objectName = "unnamed",
                const std::string& sourcePath = "",
-               const std::string& sourceTexturePath = "");
+               const std::string& sourceTexturePath = "",
+               const std::vector<std::string>& sourceTexturePaths = {},
+               const std::vector<unsigned int>& sourceTextureIDs = {});
 
     void setPosition(const glm::vec3& pos);
     void setRotation(const glm::vec3& rot);
